@@ -1,0 +1,113 @@
+heat_template_version: 2015-04-30
+
+description: |
+  Template to deploy the latest OpenStack-Helm All-in-One solution
+
+parameters:
+  availability_zone:
+    type: string
+    label: Availability Zone
+    description: Availability zone to use for the compute instance
+  key_name:
+    type: string
+    label: Key Name
+    description: The name of the key-pair to use for the compute instance
+  image:
+    type: string
+    label: Image Name
+    description:  Name of the image to use for the compute instance
+  flavor:
+    type: string
+    label: Flavor
+    description: Flavor to use for the compute instance
+  network_id:
+    type: string
+    label: Network ID
+    description: ID of the network to use for the compute instance
+  http_proxy:
+    type: string
+    label: HTTP Proxy Address
+    description: Address of your HTTP proxy server
+  https_proxy:
+    type: string
+    label: HTTPS Proxy Address
+    description: Address of your HTTPS proxy server
+
+resources:
+  osh_aio:
+    type: OS::Nova::Server
+    properties:
+      availability_zone: { get_param: availability_zone }
+      key_name: { get_param: key_name }
+      image: { get_param: image}
+      flavor: { get_param: flavor }
+      networks:
+        - network: { get_param: network_id }
+      user_data_format: RAW
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash
+            set -xe
+
+            # Set proxy environment variables
+            tee -a /etc/environment << EOF
+            http_proxy=$http_proxy
+            https_proxy=$https_proxy
+            no_proxy=localhost,127.0.0.1,172.17.0.1,.svc.cluster.local
+            HTTP_PROXY=$http_proxy
+            HTTPS_PROXY=$https_proxy
+            NO_PROXY=localhost,127.0.0.1,172.17.0.1,svc.cluster.local
+            EOF
+
+            source /etc/environment
+
+            # Grant ubuntu user passwordless sudo
+            echo "ubuntu ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+            # Add proxy addresses to APT config
+            tee /etc/apt/apt.conf << EOF
+            Acquire::http::proxy "$http_proxy";
+            Acquire::https::proxy "$https_proxy";
+            EOF
+
+            # Set git config
+            git config --system url."https://".insteadOf git://
+            git config --system http.proxy "$http_proxy"
+            git config --system https.proxy "$https_proxy"
+
+            # Change hostname to standard format
+            hostname aio
+
+            # Clone OSH
+            git clone \
+              https://git.openstack.org/openstack/openstack-helm.git \
+                /opt/openstack-helm
+            git clone \
+              https://git.openstack.org/openstack/openstack-helm-infra.git \
+                /opt/openstack-helm-infra && cd /opt/openstack-helm-infra
+                
+            chown -R ubuntu: /opt/openstack-helm /opt/openstack-helm-infra
+
+            # Add proxy information to local playbook vars
+            tee -a tools/gate/devel/local-vars.yaml << EOF
+            proxy:
+              http: $http_proxy
+              https: $https_proxy
+              noproxy: localhost,127.0.0.1,172.17.0.1,.svc.cluster.local
+            EOF
+
+            # Add DNS nameservers present in /etc/resolv.conf to playbook vars
+            sed -ne "s/nameserver //p" /etc/resolv.conf | while read -r ns; do
+              sed -i -e "/external_dns_nameservers:/ a\      - ${ns}" \
+                tools/images/kubeadm-aio/assets/opt/playbooks/vars.yaml
+            done
+
+            # Install GNU Make for deployment
+            apt-get update && apt-get install  --no-install-recommends -y make
+
+            # Deploy
+            su -c "cd /opt/openstack-helm-infra && make dev-deploy full" ubuntu
+          params:
+            $http_proxy: { get_param: http_proxy }
+            $https_proxy: { get_param: https_proxy }
