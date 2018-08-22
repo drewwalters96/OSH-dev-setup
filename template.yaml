@@ -104,6 +104,13 @@ resources:
                 tools/images/kubeadm-aio/assets/opt/playbooks/vars.yaml
             done
 
+            # NOTE(@drewwalters96): Temporary fix for download error
+            #                       Downgrade Helm from v2.10.0 to v2.9.1
+            sed -i "s/v2.10.0/v2.9.1/g" \
+              /opt/openstack-helm-infra/roles/build-helm-packages/defaults/main.yml 
+            sed -i "s/v2.10.0/v2.9.1/g" \
+              /opt/openstack-helm-infra/roles/build-images/defaults/main.yml
+
             # Install GNU Make for deployment
             apt-get update && apt-get install  --no-install-recommends -y make
 
