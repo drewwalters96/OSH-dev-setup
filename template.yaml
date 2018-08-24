@@ -1,7 +1,7 @@
 heat_template_version: 2015-04-30
 
 description: |
-  Template to deploy the latest OpenStack-Helm All-in-One solution
+  Template to deploy a Kubernetes cluster for OpenStack-Helm
 
 parameters:
   availability_zone:
@@ -115,7 +115,8 @@ resources:
             apt-get update && apt-get install  --no-install-recommends -y make
 
             # Deploy
-            su -c "cd /opt/openstack-helm-infra && make dev-deploy full" ubuntu
+            su -c "cd /opt/openstack-helm-infra && make dev-deploy setup-host" ubuntu
+            su -c "cd /opt/openstack-helm-infra && make dev-deploy k8s" ubuntu
           params:
             $http_proxy: { get_param: http_proxy }
             $https_proxy: { get_param: https_proxy }
