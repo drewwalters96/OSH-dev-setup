@@ -1,0 +1,130 @@
+heat_template_version: 2015-04-30
+
+description: |
+  Template to deploy an Ubuntu compute instance behind a proxy server
+
+parameters:
+  availability_zone:
+    type: string
+    label: Availability Zone
+    description: Availability zone to use for the compute instance
+  key_name:
+    type: string
+    label: Key Name
+    description: The name of the key-pair to use for the compute instance
+  image:
+    type: string
+    label: Image Name
+    description:  Name of the image to use for the compute instance
+  flavor:
+    type: string
+    label: Flavor
+    description: Flavor to use for the compute instance
+  network_id:
+    type: string
+    label: Network ID
+    description: ID of the network to use for the compute instance
+  http_proxy:
+    type: string
+    label: HTTP Proxy Address
+    description: Address of your HTTP proxy server
+  https_proxy:
+    type: string
+    label: HTTPS Proxy Address
+    description: Address of your HTTPS proxy server
+
+resources:
+  osh_aio:
+    type: OS::Nova::Server
+    properties:
+      availability_zone: { get_param: availability_zone }
+      key_name: { get_param: key_name }
+      image: { get_param: image}
+      flavor: { get_param: flavor }
+      networks:
+        - network: { get_param: network_id }
+      user_data_format: RAW
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/bash
+            set -xe
+
+            # Set proxy environment variables
+            tee -a /etc/environment << EOF
+            http_proxy=$http_proxy
+            https_proxy=$https_proxy
+            no_proxy=localhost,127.0.0.1,172.17.0.1,.svc.cluster.local
+            HTTP_PROXY=$http_proxy
+            HTTPS_PROXY=$https_proxy
+            NO_PROXY=localhost,127.0.0.1,172.17.0.1,svc.cluster.local
+            PROXY=$http_proxy
+            USE_PROXY=true
+            EOF
+
+            source /etc/environment
+
+            # Grant ubuntu user passwordless sudo
+            echo "ubuntu ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+            # Add proxy addresses to APT config
+            tee /etc/apt/apt.conf << EOF
+            Acquire::http::proxy "$http_proxy";
+            Acquire::https::proxy "$https_proxy";
+            EOF
+
+            # Set git config
+            git config --system url."https://".insteadOf git://
+            git config --system http.proxy "$http_proxy"
+            git config --system https.proxy "$https_proxy"
+
+            # Add hostname to /etc/hosts
+            echo $(hostname -I | cut -d\  -f1) $(hostname) | tee -a /etc/hosts
+
+            # Configure Docker for usage behind proxy servers
+            mkdir -p /etc/systemd/system/docker.service.d
+            tee /etc/systemd/system/docker.service.d/http-proxy.conf << EOF
+            [Service]    
+            Environment="HTTP_PROXY=$http_proxy" "HTTPS_PROXY=$https_proxy" "NO_PROXY=localhost,127.0.0.1"
+            EOF
+
+            # Clone Airskiff
+            git clone https://github.com/mattmceuen/airskiff.git /opt/airskiff
+            chown -R ubuntu: /opt
+
+            # Deploy Airskiff
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/common/setup-proxy.sh"
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/deployment/developer/nfs/000-install-packages.sh" ubuntu
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/deployment/developer/nfs/005-make-airship.sh" ubuntu
+
+            # Add proxy information to OSH local playbook vars
+            tee -a tools/gate/devel/local-vars.yaml << EOF
+            proxy:
+              http: $http_proxy
+              https: $https_proxy
+              noproxy: localhost,127.0.0.1,172.17.0.1,.svc.cluster.local
+            EOF
+
+            # Add DNS nameservers present in /etc/resolv.conf to OSH playbook vars
+            sed -ne "s/nameserver //p" /etc/resolv.conf | while read -r ns; do
+              sed -i -e "/external_dns_nameservers:/ a\      - ${ns}" \
+                tools/images/kubeadm-aio/assets/opt/playbooks/vars.yaml
+            done
+
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/deployment/developer/nfs/010-deploy-k8s.sh" ubuntu
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/deployment/developer/nfs/020-setup-client.sh" ubuntu
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/deployment/developer/nfs/030-ingress.sh" ubuntu
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/deployment/developer/nfs/040-nfs-provisioner.sh" ubuntu
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/deployment/developer/nfs/050-mariadb.sh" ubuntu
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/deployment/developer/nfs/060-rabbitmq.sh" ubuntu
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/deployment/developer/nfs/070-memcached.sh" ubuntu
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/deployment/developer/nfs/080-keystone.sh" ubuntu
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/deployment/developer/nfs/090-postgresql.sh" ubuntu
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/deployment/developer/nfs/100-barbican.sh" ubuntu
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/deployment/developer/nfs/110-deckhand.sh" ubuntu
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/deployment/developer/nfs/120-armada.sh" ubuntu
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/deployment/developer/nfs/130-shipyard.sh" ubuntu
+            su -c "cd /opt/airskiff && /bin/bash /opt/airskiff/tools/deployment/developer/nfs/140-pegleg.sh" ubuntu
+          params:
+            $http_proxy: { get_param: http_proxy }
+            $https_proxy: { get_param: https_proxy }
